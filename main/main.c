@@ -11,61 +11,9 @@
 #include "esp_ota_ops.h"
 #include "bts7960.h"
 #include "buttons.h"
+#include "fan_control.h"
 
 static const char *TAG = "vanfan";
-
-// Simple fan state — moves to fan_control component in Phase 3
-static bool fan_running = false;
-static int fan_speed = 20;       // 20/40/60/80/100
-static int8_t fan_direction = 1; // +1=exhaust, -1=intake
-
-static void button_callback(button_id_t btn, button_event_t evt, void *user_data)
-{
-    if (!fan_running) {
-        // Fan is OFF
-        if (evt == BTN_EVT_PRESS) {
-            // Either button press when off: turn on with last config
-            fan_running = true;
-            bts7960_set_output((int8_t)(fan_speed * fan_direction));
-            ESP_LOGI(TAG, "ON: speed=%d dir=%s",
-                     fan_speed, fan_direction > 0 ? "exhaust" : "intake");
-        } else {
-            // Hold when off: quick-start shortcuts
-            fan_running = true;
-            fan_speed = 20;
-            if (btn == BTN_ID_SPEED) {
-                fan_direction = -1; // hold speed = intake
-            } else {
-                fan_direction = 1;  // hold direction = exhaust
-            }
-            bts7960_set_output((int8_t)(fan_speed * fan_direction));
-            ESP_LOGI(TAG, "ON (hold shortcut): speed=%d dir=%s",
-                     fan_speed, fan_direction > 0 ? "exhaust" : "intake");
-        }
-    } else {
-        // Fan is ON
-        if (evt == BTN_EVT_HOLD) {
-            // Hold either button: turn off
-            fan_running = false;
-            bts7960_set_output(0);
-            ESP_LOGI(TAG, "OFF (ramp to 0)");
-        } else if (btn == BTN_ID_SPEED) {
-            // Speed cycle: 20->40->60->80->100->20
-            if (fan_speed < 40) fan_speed = 40;
-            else if (fan_speed < 60) fan_speed = 60;
-            else if (fan_speed < 80) fan_speed = 80;
-            else if (fan_speed < 100) fan_speed = 100;
-            else fan_speed = 20;
-            bts7960_set_output((int8_t)(fan_speed * fan_direction));
-            ESP_LOGI(TAG, "SPEED: %d%%", fan_speed);
-        } else {
-            // Direction toggle
-            fan_direction = -fan_direction;
-            bts7960_set_output((int8_t)(fan_speed * fan_direction));
-            ESP_LOGI(TAG, "DIR: %s", fan_direction > 0 ? "exhaust" : "intake");
-        }
-    }
-}
 
 void app_main(void)
 {
@@ -111,24 +59,26 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(bts7960_init(&motor_cfg));
 
-    // Init buttons
+    // Init fan state machine (creates task + queue, registers button callback)
+    ESP_ERROR_CHECK(fan_control_init());
+
+    // Init buttons (fan_control_init registered its callback already)
     buttons_config_t btn_cfg = {
         .speed_gpio = CONFIG_VANFAN_PIN_BTN_SPEED,
         .direction_gpio = CONFIG_VANFAN_PIN_BTN_DIRECTION,
     };
     ESP_ERROR_CHECK(buttons_init(&btn_cfg));
-    buttons_register_callback(button_callback, NULL);
 
-    ESP_LOGI(TAG, "Startup complete. Fan off, awaiting button input.");
-    ESP_LOGI(TAG, "Default: speed=%d dir=%s",
-             fan_speed, fan_direction > 0 ? "exhaust" : "intake");
+    ESP_LOGI(TAG, "Startup complete. Fan off, awaiting input.");
 
     // Heartbeat
     while (1) {
+        fan_state_t state;
+        fan_control_get_state(&state);
         ESP_LOGI(TAG, "heartbeat | heap=%lu running=%d speed=%d dir=%s output=%d",
                  (unsigned long)esp_get_free_heap_size(),
-                 fan_running, fan_speed,
-                 fan_direction > 0 ? "exhaust" : "intake",
+                 state.running, state.speed_percent,
+                 state.direction == FAN_DIR_EXHAUST ? "exhaust" : "intake",
                  bts7960_get_current_output());
         vTaskDelay(pdMS_TO_TICKS(5000));
     }

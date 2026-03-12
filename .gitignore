@@ -8,3 +8,4 @@ firmware/
 *.pyc
 __pycache__/
 .claude/
+.env

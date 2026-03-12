@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ $# -lt 2 ]; then
+if [ $# -ge 2 ]; then
+    SSID="$1"
+    PASS="$2"
+elif [ -f .env ]; then
+    # shellcheck source=/dev/null
+    source .env
+    SSID="${WIFI_SSID:-}"
+    PASS="${WIFI_PASSWORD:-}"
+else
     echo "Usage: ./build.sh <WIFI_SSID> <WIFI_PASSWORD>"
-    echo ""
-    echo "Example: ./build.sh MyNetwork MyPassword123"
+    echo "   or: create a .env file with WIFI_SSID and WIFI_PASSWORD"
     exit 1
 fi
 
-SSID="$1"
-PASS="$2"
+if [ -z "$SSID" ] || [ -z "$PASS" ]; then
+    echo "Error: WIFI_SSID and WIFI_PASSWORD must be set"
+    echo "Provide as arguments or in .env file"
+    exit 1
+fi
 IMAGE="vanfan-build"
 MAX_SIZE=$((1536 * 1024))  # 1.5MB in bytes
 
