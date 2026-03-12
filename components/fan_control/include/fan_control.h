@@ -5,8 +5,8 @@
 #include <stdint.h>
 
 typedef enum {
-    FAN_DIR_EXHAUST = 1,
-    FAN_DIR_INTAKE = -1,
+    FAN_DIR_EXHAUST = -1,
+    FAN_DIR_INTAKE = 1,
 } fan_direction_t;
 
 typedef enum {
