@@ -10,8 +10,13 @@ elif [ -f .env ]; then
     SSID="${WIFI_SSID:-}"
     PASS="${WIFI_PASSWORD:-}"
 else
-    echo "Usage: ./build.sh <WIFI_SSID> <WIFI_PASSWORD>"
-    echo "   or: create a .env file with WIFI_SSID and WIFI_PASSWORD"
+    echo "Error: No .env file found and no arguments provided."
+    echo ""
+    echo "Create a .env file with:"
+    echo "  WIFI_SSID='YourSSID'"
+    echo "  WIFI_PASSWORD='YourPassword'"
+    echo ""
+    echo "Or pass as arguments: ./build.sh <SSID> <PASSWORD>"
     exit 1
 fi
 

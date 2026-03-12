@@ -149,7 +149,7 @@ else speed = 20;  // wrap around
 **STOP here. Run all tests before proceeding to Phase 4.**
 
 ```bash
-./build.sh <SSID> <PASS> && ./flash.sh && ./monitor.sh
+./build.sh && ./flash.sh && ./monitor.sh
 ```
 
 **Test 3.1 — Identical behavior to Phase 2:**
@@ -232,7 +232,7 @@ Rationale: hardware and physical controls before network, so buttons work immedi
 **STOP here. Run all tests before proceeding to Phase 5.**
 
 ```bash
-./build.sh <SSID> <PASS> && ./flash.sh && ./monitor.sh
+./build.sh && ./flash.sh && ./monitor.sh
 ```
 
 **Test 4.1 — WiFi connection:**
@@ -376,7 +376,7 @@ Free heap at runtime: **~253KB**
 **Test 5.2 — Bump version and rebuild:**
 ```bash
 echo "0.2.0" > version.txt
-./build.sh <SSID> <PASS>
+./build.sh
 ```
 - [ ] New binary built successfully
 
@@ -508,7 +508,7 @@ main.c
 ## Build & Deploy
 
 ```bash
-./build.sh <WIFI_SSID> <WIFI_PASSWORD>   # Build in Docker
+./build.sh                                 # Build in Docker (credentials from .env)
 ./flash.sh                                 # Flash via USB
 ./monitor.sh                               # Serial monitor
 ```
