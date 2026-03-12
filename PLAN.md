@@ -183,7 +183,7 @@ Binary size: **218KB** (up from 217KB in Phase 2)
 
 ---
 
-## Phase 4: WiFi + REST API + SSE — COMPLETE
+## Phase 4: WiFi + REST API + SSE — COMPLETE (see git history for details)
 
 **Goal:** Full network control and event streaming alongside physical buttons.
 
@@ -352,62 +352,64 @@ Free heap at runtime: **~253KB**
 
 ---
 
-## Phase 5: OTA
+## Phase 5: OTA — COMPLETE
 
 **Goal:** Remote firmware update from Pi with rollback safety.
 
 ### `components/ota/`
-- `ota_init()` — called early in boot. If running from a pending-verify partition, validates (WiFi connected, motor driver init OK) then calls `esp_ota_mark_app_valid_cancel_rollback()`. If validation fails, bootloader rolls back on next reset.
+- `ota_init()` — called at end of boot sequence. If running from a pending-verify partition (rollback enabled), calls `esp_ota_mark_app_valid_cancel_rollback()`. Logs running and next update partitions.
 - `ota_handle_upload(req)` — streaming upload handler:
-  1. Stops fan (safety)
-  2. `esp_ota_begin()` on next update partition
-  3. Streams request body in 1KB chunks via `esp_ota_write()`
+  1. API layer stops fan (emergency stop for safety)
+  2. `esp_ota_begin()` on next update partition with `OTA_SIZE_UNKNOWN`
+  3. Streams request body in 1KB heap-allocated chunks via `esp_ota_write()`
   4. `esp_ota_end()` validates image
   5. `esp_ota_set_boot_partition()` + respond 200 + `esp_restart()`
 
+### `main/main.c` init order (updated):
+1. NVS → 2. Motor driver → 3. Fan control → 4. Buttons → 5. Event emitter → 6. WiFi → 7. API → **8. OTA boot validation**
+
 ### Phase 5 Hardware Tests
 
-**STOP here. Run all tests before proceeding to Phase 6.**
-
 **Test 5.1 — Preparation:**
-- [ ] Note current version from `curl http://vanfan.local/api/v1/info` → version "X"
-- [ ] Note current OTA partition from info response or serial log
+- [x] Current version: v0.1.3 on ota_0
 
 **Test 5.2 — Bump version and rebuild:**
-```bash
-echo "0.2.0" > version.txt
-./build.sh
-```
-- [ ] New binary built successfully
+- [x] v0.2.0 binary built (877KB)
 
 **Test 5.3 — OTA upload:**
-```bash
-# Fan running at some speed
-curl -X POST --data-binary @firmware/vanfan.bin http://vanfan.local/api/v1/ota/update
-```
-- [ ] Fan stops before OTA begins (safety)
-- [ ] Serial shows OTA progress (bytes written, percentage)
-- [ ] Response indicates success before restart
-- [ ] Device reboots automatically
+- [x] Fan stops before OTA begins (safety) — serial shows `EMERGENCY_STOP`
+- [x] Serial shows OTA progress (10% through 100%, bytes written)
+- [x] Response: `{"success":true,"message":"OTA update complete, restarting..."}`
+- [x] Device reboots automatically
 
 **Test 5.4 — Post-OTA verification:**
-- [ ] Device reconnects to WiFi after reboot
-- [ ] `curl http://vanfan.local/api/v1/info` shows version "0.2.0"
-- [ ] Info shows different OTA partition than before (ota_0 ↔ ota_1)
-- [ ] All functionality works: buttons, API, SSE
+- [x] Device reconnects to WiFi after reboot
+- [x] `curl http://vanfan.local/api/v1/info` shows version "0.2.0"
+- [x] Info shows `ota_partition: ota_1` (was ota_0)
+- [x] API works: status, toggle confirmed
 
-**Test 5.5 — Rollback (if possible to test):**
-- [ ] Build a deliberately broken firmware (e.g., skip `esp_ota_mark_app_valid_cancel_rollback()`)
-- [ ] Upload via OTA → device reboots → fails validation → reboots again → rolls back to previous working version
-- [ ] Or: verify rollback API if implemented
+**Test 5.5 — Rollback:**
+- [ ] Deferred — rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`) not enabled for initial release. `ota_init()` has the pending-verify check ready for when rollback is enabled.
 
 **Test 5.6 — OTA rejection:**
-- [ ] Upload garbage data: `echo "not firmware" | curl -X POST --data-binary @- http://vanfan.local/api/v1/ota/update`
-- [ ] `esp_ota_end()` fails → error response → device does NOT reboot
-- [ ] Fan and API continue working normally after rejected upload
+- [x] Garbage data rejected: `{"error":500,"message":"OTA write failed"}`
+- [x] Device does NOT reboot — stays on v0.2.0 ota_1
+- [x] API continues working normally after rejected upload
 
 **Test 5.7 — Binary size:**
-- [ ] Record: ______ KB (OTA component shouldn't add much)
+- [x] Record: **877KB** (up 10KB from Phase 4's 867KB)
+
+### Phase 5 Hardware Tests — PASSED (6/7, rollback deferred)
+
+Binary size: **877KB** (up from 867KB — OTA component minimal overhead)
+
+### Changes from original plan
+- **Rollback deferred**: `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` not enabled — requires bootloader + app to be built together, complicates OTA where bootloader can't be updated. `ota_init()` has the code ready for future enablement.
+- **OTA buffer heap-allocated**: 1KB buffer moved from stack to heap to avoid httpd task stack overflow during `esp_ota_end()` image validation.
+- **httpd stack increased to 8192**: Default 4096 too small for OTA image validation call chain.
+- **FreeRTOS timer task stack increased to 4096**: Default 2048 overflowed during WiFi reconnect timer callback (`ESP_LOGI` + `esp_wifi_connect()`).
+- **Version banner dynamic**: `main.c` now reads version from `esp_app_get_description()` instead of hardcoded string.
+- **`/api/v1/info` includes `ota_partition`**: Shows current running partition label for OTA verification.
 
 ---
 

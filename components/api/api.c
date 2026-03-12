@@ -7,6 +7,7 @@
 #include "esp_system.h"
 #include "esp_chip_info.h"
 #include "esp_app_desc.h"
+#include "esp_ota_ops.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdio.h>
@@ -308,10 +309,16 @@ static esp_err_t handle_events(httpd_req_t *req)
 
 static esp_err_t handle_ota_update(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_status(req, "501 Not Implemented");
-    httpd_resp_sendstr(req, "{\"error\":501,\"message\":\"OTA not implemented yet\"}");
-    return ESP_OK;
+    ESP_LOGI(TAG, "OTA update requested — stopping fan for safety");
+
+    fan_command_t cmd = {
+        .type = FAN_CMD_EMERGENCY_STOP,
+        .source = FAN_SRC_API,
+    };
+    fan_control_send_command(&cmd);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    return ota_handle_upload(req);
 }
 
 // ---------- GET /api/v1/info ----------
@@ -339,6 +346,11 @@ static esp_err_t handle_info(httpd_req_t *req)
     cJSON_AddNumberToObject(chip_obj, "revision",
                             chip.revision / 100 + (chip.revision % 100) / 100.0);
     cJSON_AddItemToObject(root, "chip", chip_obj);
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running) {
+        cJSON_AddStringToObject(root, "ota_partition", running->label);
+    }
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -373,6 +385,7 @@ esp_err_t api_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 12;
     config.lru_purge_enable = true;
+    config.stack_size = 8192;
 
     esp_err_t ret = httpd_start(&s_server, &config);
     if (ret != ESP_OK) {

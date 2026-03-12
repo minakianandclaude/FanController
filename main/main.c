@@ -15,6 +15,8 @@
 #include "event_emitter.h"
 #include "wifi_manager.h"
 #include "api.h"
+#include "ota.h"
+#include "esp_app_desc.h"
 
 static const char *TAG = "vanfan";
 
@@ -32,8 +34,9 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     // Version
+    const esp_app_desc_t *app_desc = esp_app_get_description();
     ESP_LOGI(TAG, "================================");
-    ESP_LOGI(TAG, "  VanFan Controller v0.1.0");
+    ESP_LOGI(TAG, "  VanFan Controller v%s", app_desc->version);
     ESP_LOGI(TAG, "================================");
 
     // Chip info
@@ -80,6 +83,9 @@ void app_main(void)
 
     // 6. HTTP API server
     ESP_ERROR_CHECK(api_init());
+
+    // 7. OTA boot validation (mark firmware valid if pending verify)
+    ESP_ERROR_CHECK(ota_init());
 
     ESP_LOGI(TAG, "Startup complete. Fan off, awaiting input.");
 
