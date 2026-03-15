@@ -168,8 +168,11 @@ static void process_command(const fan_command_t *cmd)
     notify_state_change(cmd->source);
 }
 
-static void button_callback(button_id_t btn, button_event_t evt, void *user_data)
+void fan_control_button_event(button_id_t btn, button_event_t evt)
 {
+    // Ignore hold-both — handled by main.c provisioning logic
+    if (evt == BTN_EVT_HOLD_BOTH) return;
+
     fan_command_t cmd = {
         .source = FAN_SRC_BUTTON,
         .speed = 0,
@@ -177,16 +180,13 @@ static void button_callback(button_id_t btn, button_event_t evt, void *user_data
         .mode = FAN_MODE_MANUAL,
     };
 
-    // Read current state to decide command
     fan_state_t state;
     fan_control_get_state(&state);
 
     if (!state.running) {
         if (evt == BTN_EVT_PRESS) {
-            // Either button press when off: turn on with last config
             cmd.type = FAN_CMD_TURN_ON;
         } else {
-            // Hold when off: quick-start shortcuts
             cmd.type = FAN_CMD_TURN_ON;
             cmd.speed = 20;
             if (btn == BTN_ID_SPEED) {
@@ -240,9 +240,6 @@ esp_err_t fan_control_init(void)
         ESP_LOGE(TAG, "Failed to create fan_control task");
         return ESP_FAIL;
     }
-
-    // Register ourselves as button callback handler
-    buttons_register_callback(button_callback, NULL);
 
     ESP_LOGI(TAG, "Initialized: speed=%d dir=%s mode=MANUAL",
              s_state.speed_percent, dir_name(s_state.direction));

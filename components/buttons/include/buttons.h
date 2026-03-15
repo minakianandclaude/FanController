@@ -5,11 +5,13 @@
 typedef enum {
     BTN_ID_SPEED,
     BTN_ID_DIRECTION,
+    BTN_ID_BOTH,
 } button_id_t;
 
 typedef enum {
     BTN_EVT_PRESS,
     BTN_EVT_HOLD,
+    BTN_EVT_HOLD_BOTH,
 } button_event_t;
 
 typedef void (*button_callback_t)(button_id_t btn, button_event_t evt, void *user_data);

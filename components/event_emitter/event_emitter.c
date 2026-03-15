@@ -162,3 +162,32 @@ esp_err_t event_emitter_remove_client(int fd)
     xSemaphoreGive(s_mutex);
     return ESP_OK;
 }
+
+esp_err_t event_emitter_stop(void)
+{
+    // Stop keepalive timer to prevent sends on stale handles
+    if (s_keepalive_timer) {
+        xTimerStop(s_keepalive_timer, portMAX_DELAY);
+    }
+
+    // Clear all clients
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_SSE_CLIENTS; i++) {
+        s_clients[i].active = false;
+    }
+    xSemaphoreGive(s_mutex);
+
+    ESP_LOGI(TAG, "Stopped — all SSE clients cleared");
+    return ESP_OK;
+}
+
+esp_err_t event_emitter_start(void)
+{
+    // Restart keepalive timer (client list is empty; new SSE connections will register)
+    if (s_keepalive_timer) {
+        xTimerStart(s_keepalive_timer, 0);
+    }
+
+    ESP_LOGI(TAG, "Started — ready for SSE clients");
+    return ESP_OK;
+}

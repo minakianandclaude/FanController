@@ -211,14 +211,41 @@ with requests.get('http://vanfan.local/api/v1/events', stream=True) as r:
 
 ### POST /api/v1/ota/update
 
-Upload new firmware binary for over-the-air update. *(Available in Phase 5)*
+Upload a new firmware binary for over-the-air update.
 
-**Status:** Returns `501 Not Implemented`.
+The device emergency-stops the fan for safety, streams the binary to the alternate OTA partition in 1KB chunks, validates the image, and restarts.
 
-**Future usage:**
+**Request:**
+- `Content-Type`: any (binary body)
+- Body: raw `.bin` firmware file
+
 ```bash
 curl -X POST --data-binary @firmware/vanfan.bin http://vanfan.local/api/v1/ota/update
 ```
+
+**Response (success):**
+```json
+{
+  "status": "ok",
+  "message": "OTA update successful, restarting..."
+}
+```
+
+The device restarts immediately after sending the response.
+
+**Errors:**
+- `500` — OTA begin, write, or validation failure (JSON error response with details)
+
+**Limits:**
+- Maximum binary size: 1.5MB (OTA partition size)
+- Current binary size: ~877KB
+- No authentication required
+
+**Notes:**
+- The fan is emergency-stopped before the upload begins
+- Progress is logged to serial every ~10%
+- If validation fails, the device continues running the current firmware
+- On successful boot of new firmware, the partition is automatically marked valid
 
 ---
 
@@ -229,7 +256,7 @@ Returns device information.
 **Response:**
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "uptime_s": 3600,
   "free_heap": 350000,
   "chip": {
@@ -263,7 +290,7 @@ All errors return JSON:
 |------|--------------------------|
 | 400  | Bad request (malformed JSON, missing required field) |
 | 422  | Validation error (out-of-range value, invalid enum)  |
-| 501  | Not implemented (OTA stub)                           |
+| 500  | Internal error (OTA failure, etc.)                   |
 
 ---
 

@@ -401,3 +401,41 @@ esp_err_t api_init(void)
     ESP_LOGI(TAG, "HTTP server started (%d endpoints)", count);
     return ESP_OK;
 }
+
+esp_err_t api_stop(void)
+{
+    // Stop event emitter BEFORE httpd to prevent stale handle access
+    event_emitter_stop();
+
+    if (s_server) {
+        httpd_stop(s_server);
+        s_server = NULL;
+        ESP_LOGI(TAG, "HTTP server stopped");
+    }
+    return ESP_OK;
+}
+
+esp_err_t api_start(void)
+{
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.max_uri_handlers = 12;
+    config.lru_purge_enable = true;
+    config.stack_size = 8192;
+
+    esp_err_t ret = httpd_start(&s_server, &config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to restart HTTP server: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    int count = sizeof(s_uri_handlers) / sizeof(s_uri_handlers[0]);
+    for (int i = 0; i < count; i++) {
+        httpd_register_uri_handler(s_server, &s_uri_handlers[i]);
+    }
+
+    // Restart event emitter after httpd is ready
+    event_emitter_start();
+
+    ESP_LOGI(TAG, "HTTP server restarted (%d endpoints)", count);
+    return ESP_OK;
+}

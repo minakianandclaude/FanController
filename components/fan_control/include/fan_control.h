@@ -49,8 +49,11 @@ typedef struct {
 
 typedef void (*fan_state_callback_t)(const fan_state_t *state, fan_command_source_t source);
 
+#include "buttons.h"
+
 esp_err_t fan_control_init(void);
 esp_err_t fan_control_send_command(const fan_command_t *cmd);
 esp_err_t fan_control_get_state(fan_state_t *out);
 esp_err_t fan_control_register_state_cb(fan_state_callback_t cb);
 void fan_control_set_temp_input(float temp_c);
+void fan_control_button_event(button_id_t btn, button_event_t evt);

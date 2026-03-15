@@ -33,11 +33,51 @@ static void *s_cb_data = NULL;
 static void fire_event(button_id_t btn, button_event_t evt)
 {
     ESP_LOGI(TAG, "btn=%s evt=%s",
-             btn == BTN_ID_SPEED ? "SPEED" : "DIRECTION",
-             evt == BTN_EVT_PRESS ? "PRESS" : "HOLD");
+             btn == BTN_ID_SPEED ? "SPEED" :
+             btn == BTN_ID_DIRECTION ? "DIRECTION" : "BOTH",
+             evt == BTN_EVT_PRESS ? "PRESS" :
+             evt == BTN_EVT_HOLD ? "HOLD" : "HOLD_BOTH");
     if (s_cb) {
         s_cb(btn, evt, s_cb_data);
     }
+}
+
+static bool check_hold_both(void)
+{
+    // Both must be in PRESSED state
+    if (s_buttons[0].state != BTN_STATE_PRESSED ||
+        s_buttons[1].state != BTN_STATE_PRESSED) {
+        return false;
+    }
+
+    // Verify both are still physically held (active low, pull-up)
+    if (gpio_get_level(s_buttons[0].gpio) != 0 ||
+        gpio_get_level(s_buttons[1].gpio) != 0) {
+        return false;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    uint32_t elapsed0 = (now - s_buttons[0].state_enter_tick) * portTICK_PERIOD_MS;
+    uint32_t elapsed1 = (now - s_buttons[1].state_enter_tick) * portTICK_PERIOD_MS;
+
+    // Both exceeded hold threshold — fire HOLD_BOTH
+    if (elapsed0 >= HOLD_MS && elapsed1 >= HOLD_MS) {
+        fire_event(BTN_ID_BOTH, BTN_EVT_HOLD_BOTH);
+        // Transition both to WAIT_RELEASE (suppresses individual hold events)
+        s_buttons[0].state = BTN_STATE_WAIT_RELEASE;
+        s_buttons[0].state_enter_tick = now;
+        s_buttons[1].state = BTN_STATE_WAIT_RELEASE;
+        s_buttons[1].state_enter_tick = now;
+        return true;
+    }
+
+    // One exceeded threshold — suppress individual polling to prevent
+    // individual HOLD from firing while waiting for both to catch up
+    if (elapsed0 >= HOLD_MS || elapsed1 >= HOLD_MS) {
+        return true;
+    }
+
+    return false;
 }
 
 static void poll_button(btn_context_t *btn)
@@ -90,8 +130,11 @@ static void poll_button(btn_context_t *btn)
 static void button_poll_task(void *arg)
 {
     while (1) {
-        poll_button(&s_buttons[0]);
-        poll_button(&s_buttons[1]);
+        // Check hold-both BEFORE individual polling to suppress individual holds
+        if (!check_hold_both()) {
+            poll_button(&s_buttons[0]);
+            poll_button(&s_buttons[1]);
+        }
         vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
     }
 }

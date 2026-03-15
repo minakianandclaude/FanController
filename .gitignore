@@ -9,3 +9,4 @@ firmware/
 __pycache__/
 .claude/
 .env
+.DS_Store

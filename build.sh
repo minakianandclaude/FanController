@@ -46,6 +46,7 @@ docker cp "$CID:/project/build/bootloader/bootloader.bin" firmware/
 docker cp "$CID:/project/build/partition_table/partition-table.bin" firmware/
 docker cp "$CID:/project/build/vanfan.bin" firmware/
 docker cp "$CID:/project/build/ota_data_initial.bin" firmware/
+docker cp "$CID:/project/build/vanfan.elf" firmware/ 2>/dev/null || true
 docker rm "$CID" > /dev/null
 
 BIN_SIZE=$(stat -f%z firmware/vanfan.bin 2>/dev/null || stat -c%s firmware/vanfan.bin 2>/dev/null)

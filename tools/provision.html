@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VanFan WiFi Provisioning</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 32px;
+            width: 400px;
+            max-width: 90vw;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        h1 {
+            font-size: 20px;
+            margin-bottom: 4px;
+            color: #fff;
+        }
+        .subtitle { color: #888; font-size: 13px; margin-bottom: 24px; }
+        .status {
+            padding: 10px 14px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            display: none;
+        }
+        .status.info { display: block; background: #0a3d62; color: #82ccdd; }
+        .status.success { display: block; background: #1e4d2b; color: #7dcea0; }
+        .status.error { display: block; background: #4a1a1a; color: #e74c3c; }
+        label {
+            display: block;
+            font-size: 13px;
+            color: #aaa;
+            margin-bottom: 4px;
+        }
+        input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            background: #0f0f23;
+            color: #fff;
+            font-size: 14px;
+            margin-bottom: 16px;
+            outline: none;
+        }
+        input:focus { border-color: #4a90d9; }
+        button {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-connect { background: #4a90d9; color: #fff; margin-bottom: 12px; }
+        .btn-connect:hover:not(:disabled) { background: #357abd; }
+        .btn-provision { background: #27ae60; color: #fff; }
+        .btn-provision:hover:not(:disabled) { background: #1e8449; }
+        .btn-disconnect { background: #555; color: #fff; margin-top: 12px; font-size: 12px; padding: 8px; }
+        .btn-disconnect:hover:not(:disabled) { background: #777; }
+        .connected-info {
+            font-size: 12px;
+            color: #7dcea0;
+            margin-bottom: 16px;
+            padding: 8px;
+            background: #1e4d2b33;
+            border-radius: 6px;
+        }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>VanFan Provisioning</h1>
+        <p class="subtitle">Send WiFi credentials via Bluetooth</p>
+
+        <div id="status" class="status"></div>
+
+        <!-- Connect phase -->
+        <div id="connect-section">
+            <button id="btn-connect" class="btn-connect" onclick="connectDevice()">
+                Connect to VanFan
+            </button>
+        </div>
+
+        <!-- Provision phase (shown after BLE connect) -->
+        <div id="provision-section" class="hidden">
+            <div id="device-info" class="connected-info"></div>
+
+            <label for="ssid">WiFi Network (SSID)</label>
+            <input type="text" id="ssid" placeholder="Enter WiFi SSID" autocomplete="off">
+
+            <label for="password">WiFi Password</label>
+            <div style="position:relative">
+                <input type="password" id="password" placeholder="Enter WiFi password" style="padding-right:40px">
+                <span id="toggle-pw" onclick="togglePassword()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:16px;user-select:none;margin-top:-8px">👁</span>
+            </div>
+
+            <button id="btn-provision" class="btn-provision" onclick="provision()">
+                Send Credentials
+            </button>
+
+            <button class="btn-disconnect" onclick="disconnect()">
+                Disconnect
+            </button>
+        </div>
+    </div>
+
+    <script>
+    function togglePassword() {
+        const pw = document.getElementById('password');
+        const icon = document.getElementById('toggle-pw');
+        if (pw.type === 'password') {
+            pw.type = 'text';
+            icon.textContent = '🙈';
+        } else {
+            pw.type = 'password';
+            icon.textContent = '👁';
+        }
+    }
+
+    let device = null;
+    let server = null;
+    let service = null;
+    let sessionChar = null;
+    let configChar = null;
+
+    // Helper: encode a string to Uint8Array
+    function strToBytes(str) {
+        return new TextEncoder().encode(str);
+    }
+
+    // Helper: encode a protobuf varint
+    function encodeVarint(value) {
+        const bytes = [];
+        while (value > 0x7f) {
+            bytes.push((value & 0x7f) | 0x80);
+            value >>>= 7;
+        }
+        bytes.push(value & 0x7f);
+        return new Uint8Array(bytes);
+    }
+
+    // Helper: encode a protobuf length-delimited field
+    function encodeBytes(fieldNumber, data) {
+        const tag = encodeVarint((fieldNumber << 3) | 2);
+        const len = encodeVarint(data.length);
+        const result = new Uint8Array(tag.length + len.length + data.length);
+        result.set(tag, 0);
+        result.set(len, tag.length);
+        result.set(data, tag.length + len.length);
+        return result;
+    }
+
+    // Helper: encode a protobuf varint field
+    function encodeVarintField(fieldNumber, value) {
+        const tag = encodeVarint((fieldNumber << 3) | 0);
+        const val = encodeVarint(value);
+        const result = new Uint8Array(tag.length + val.length);
+        result.set(tag, 0);
+        result.set(val, tag.length);
+        return result;
+    }
+
+    // Helper: concatenate Uint8Arrays
+    function concatBytes(...arrays) {
+        const total = arrays.reduce((sum, a) => sum + a.length, 0);
+        const result = new Uint8Array(total);
+        let offset = 0;
+        for (const a of arrays) {
+            result.set(a, offset);
+            offset += a.length;
+        }
+        return result;
+    }
+
+    // Build Security0 session request (SessionCmd with Sec0Payload)
+    function buildSessionRequest() {
+        const sec0Payload = encodeVarintField(1, 0); // msg = S0_Session_Command = 0
+        const secVer = encodeVarintField(2, 0); // sec_ver = SecScheme0 = 0
+        const s0Field = encodeBytes(10, sec0Payload); // S0 = Sec0Payload
+        return concatBytes(secVer, s0Field);
+    }
+
+    // Build WiFi config set request
+    function buildConfigRequest(ssid, password) {
+        const cmdSetConfig = concatBytes(
+            encodeBytes(1, strToBytes(ssid)),
+            encodeBytes(2, strToBytes(password))
+        );
+        return concatBytes(
+            encodeVarintField(1, 2), // msg = TypeCmdSetConfig = 2
+            encodeBytes(12, cmdSetConfig) // cmd_set_config (field 12)
+        );
+    }
+
+    // Build WiFi apply config request
+    function buildApplyRequest() {
+        return encodeVarintField(1, 4); // msg = TypeCmdApplyConfig = 4
+    }
+
+    function setStatus(msg, type) {
+        const el = document.getElementById('status');
+        el.textContent = msg;
+        el.className = 'status ' + type;
+    }
+
+    async function connectDevice() {
+        const btn = document.getElementById('btn-connect');
+        btn.disabled = true;
+        btn.textContent = 'Scanning...';
+        setStatus('Looking for VanFan device...', 'info');
+
+        try {
+            // Request BLE device — filter by name prefix
+            device = await navigator.bluetooth.requestDevice({
+                filters: [{ namePrefix: 'VANFAN' }],
+                optionalServices: ['1775244d-6b43-439b-877c-060f2d9bed07']
+            });
+
+            setStatus('Connecting to ' + device.name + '...', 'info');
+            server = await device.gatt.connect();
+
+            // Discover provisioning service
+            const PROV_SVC = '1775244d-6b43-439b-877c-060f2d9bed07';
+            service = await server.getPrimaryService(PROV_SVC);
+
+            // Find characteristics by known UUIDs (derived from service UUID)
+            sessionChar = await service.getCharacteristic('1775ff51-6b43-439b-877c-060f2d9bed07');
+            configChar = await service.getCharacteristic('1775ff52-6b43-439b-877c-060f2d9bed07');
+
+            // Establish security0 session
+            const sessionReq = buildSessionRequest();
+            await sessionChar.writeValueWithResponse(sessionReq);
+            const sessionResp = await sessionChar.readValue();
+
+            setStatus('Connected to ' + device.name, 'success');
+            document.getElementById('connect-section').classList.add('hidden');
+            document.getElementById('provision-section').classList.remove('hidden');
+            document.getElementById('device-info').textContent =
+                'Connected to: ' + device.name;
+            document.getElementById('ssid').focus();
+
+        } catch (e) {
+            setStatus('Connection failed: ' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Connect to VanFan';
+        }
+    }
+
+    async function provision() {
+        const ssid = document.getElementById('ssid').value.trim();
+        const password = document.getElementById('password').value;
+        const btn = document.getElementById('btn-provision');
+
+        if (!ssid) {
+            setStatus('Please enter a WiFi SSID', 'error');
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Sending...';
+        setStatus('Sending WiFi credentials...', 'info');
+
+        try {
+            // Step 1: Send WiFi config (SSID + password)
+            const configReq = buildConfigRequest(ssid, password);
+            await configChar.writeValueWithResponse(configReq);
+            const configResp = await configChar.readValue();
+
+            // Step 2: Apply config (tells ESP32 to connect)
+            const applyReq = buildApplyRequest();
+            await configChar.writeValueWithResponse(applyReq);
+            const applyResp = await configChar.readValue();
+
+            setStatus('Credentials sent! VanFan is connecting to "' + ssid + '"...', 'success');
+            btn.textContent = 'Done!';
+
+            // Disconnect BLE after a short delay
+            setTimeout(() => {
+                if (server && server.connected) {
+                    server.disconnect();
+                }
+            }, 2000);
+
+        } catch (e) {
+            setStatus('Provisioning failed: ' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Send Credentials';
+        }
+    }
+
+    function disconnect() {
+        if (server && server.connected) {
+            server.disconnect();
+        }
+        device = null;
+        server = null;
+        service = null;
+        sessionChar = null;
+        configChar = null;
+
+        document.getElementById('connect-section').classList.remove('hidden');
+        document.getElementById('provision-section').classList.add('hidden');
+        document.getElementById('btn-connect').disabled = false;
+        document.getElementById('btn-connect').textContent = 'Connect to VanFan';
+        setStatus('Disconnected', 'info');
+    }
+
+    // Handle Web Bluetooth availability
+    if (navigator.bluetooth) {
+        navigator.bluetooth.getAvailability().then(available => {
+            if (!available) {
+                setStatus('Web Bluetooth is not available in this browser. Use Chrome.', 'error');
+                document.getElementById('btn-connect').disabled = true;
+            }
+        });
+    } else {
+        setStatus('Web Bluetooth is not supported. Use Chrome on macOS, Linux, or Android.', 'error');
+        document.getElementById('btn-connect').disabled = true;
+    }
+    </script>
+</body>
+</html>

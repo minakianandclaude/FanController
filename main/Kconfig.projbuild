@@ -58,4 +58,10 @@ menu "VanFan Controller"
             default 10
     endmenu
 
+    menu "Status LED"
+        config VANFAN_PIN_STATUS_LED
+            int "Status LED GPIO (WS2812B)"
+            default 46
+    endmenu
+
 endmenu
