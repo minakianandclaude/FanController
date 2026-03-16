@@ -13,6 +13,7 @@ Built on **ESP-IDF v5.2.3** with a Docker-based build pipeline.
 - **OTA updates** — Streaming firmware upload via HTTP
 - **BLE WiFi provisioning** — Chrome Web Bluetooth UI for field credential updates
 - **mDNS** — Discoverable as `vanfan.local`
+- **LED lighting** — 3-zone PWM dimming via IRLZ34N MOSFETs, independent brightness control, dedicated button
 - **Status LED** — WS2812B RGB feedback for WiFi/BLE state
 
 ## Hardware
@@ -21,7 +22,8 @@ Built on **ESP-IDF v5.2.3** with a Docker-based build pipeline.
 |-----------|---------|
 | MCU | ESP32-S3 (QFN56), dual core 240MHz, 4MB flash, 2MB PSRAM |
 | Motor driver | BTS7960 dual H-bridge (5V VCC, 3.3V logic compatible) |
-| Buttons | 2x momentary (Speed + Direction), internal pull-up, active low |
+| Buttons | 3x momentary (Speed + Direction + Light), internal pull-up, active low |
+| LED lighting | 3x IRLZ34N MOSFETs, PWM dimming via LEDC |
 | Status LED | WS2812B RGB on GPIO46 |
 | Console | USB-Serial/JTAG (GPIO19/20) |
 
@@ -37,6 +39,10 @@ Built on **ESP-IDF v5.2.3** with a Docker-based build pipeline.
 | L_IS | 3 | Input | Left current sense (ADC, future) |
 | Speed button | 9 | Input | Internal pull-up, active low |
 | Direction button | 10 | Input | Internal pull-up, active low |
+| LED Zone 1 | 11 | Output | LEDC CH2, 1kHz PWM |
+| LED Zone 2 | 12 | Output | LEDC CH3, 1kHz PWM |
+| LED Zone 3 | 13 | Output | LEDC CH4, 1kHz PWM |
+| Light button | 14 | Input | Internal pull-up, active low |
 | Status LED | 46 | Output | WS2812B via RMT peripheral |
 
 All pins are configurable via Kconfig (`VanFan Controller` menu).
@@ -89,8 +95,10 @@ Opens a serial monitor at 115200 baud. Note: boot messages are lost after reset 
 main.c (boot sequence + heartbeat)
 ├── bts7960        — Motor driver (LEDC PWM + GPIO)
 ├── fan_control    — State machine + command queue
-├── buttons        — Button polling + debounce
-├── event_emitter  — SSE client management
+├── buttons        — Button polling + debounce (speed + direction)
+├── led_control    — 3-zone LED PWM dimming
+├── light_button   — Light button polling + debounce
+├── event_emitter  — SSE client management (fan + lights)
 ├── wifi           — WiFi manager + mDNS + auto-reconnect
 ├── api            — REST API endpoints (HTTP server)
 ├── ota            — OTA firmware update handler
@@ -106,13 +114,15 @@ main.c (boot sequence + heartbeat)
 3. Status LED init
 4. BTS7960 motor driver init
 5. Fan control state machine init
-6. Button polling task start
-7. Event emitter (SSE) init
-8. WiFi manager init (connects in background)
-9. BLE provisioning init
-10. HTTP API server start
-11. OTA boot validation
-12. Heartbeat loop (5-second state logging)
+6. Button polling task start (speed + direction)
+7. LED control init (3-zone PWM)
+8. Light button polling task start
+9. Event emitter (SSE) init
+10. WiFi manager init (connects in background)
+11. BLE provisioning init
+12. HTTP API server start
+13. OTA boot validation
+14. Heartbeat loop (5-second state logging)
 
 ### Key Design Patterns
 
@@ -129,7 +139,8 @@ main.c (boot sequence + heartbeat)
 | Task | Stack | Priority | Purpose |
 |------|-------|----------|---------|
 | `fan_control` | 4096 | 10 | Command queue + state machine |
-| `btn_poll` | 4096 | 5 | Button polling + debounce |
+| `btn_poll` | 4096 | 5 | Fan button polling + debounce |
+| `light_btn` | 4096 | 5 | Light button polling + debounce |
 | `status_led` | 4096 | 2 | LED blink state machine |
 | `app_main` | 8192 | 1 | Boot + heartbeat |
 
@@ -149,6 +160,15 @@ Two-button interface with press and hold gestures:
 - Debounce: 50ms
 - 10ms polling interval
 
+### Light Button
+
+Dedicated button for LED lighting control:
+
+| Action | Result |
+|--------|--------|
+| Press | Toggle zone 1 on/off (at 50% brightness) |
+| Hold | All zones off |
+
 ## REST API
 
 **Base URL:** `http://vanfan.local/api/v1` (mDNS) or `http://<device-ip>/api/v1`
@@ -164,9 +184,16 @@ Two-button interface with press and hold gestures:
 | `POST` | `/set` | Combined speed + direction (both optional) |
 | `POST` | `/toggle` | Toggle on/off |
 | `POST` | `/stop` | Emergency brake (no ramp) |
-| `GET` | `/events` | SSE stream |
+| `GET` | `/events` | SSE stream (fan + lights) |
 | `POST` | `/ota/update` | Upload firmware binary |
 | `GET` | `/info` | Version, uptime, heap, chip info |
+| `GET` | `/wifi` | WiFi status and credential source |
+| `POST` | `/wifi/reset` | Clear NVS creds, use build-time |
+| `GET` | `/lights` | Current light zone states |
+| `POST` | `/lights/zone` | Set single zone |
+| `POST` | `/lights/zones` | Set multiple zones |
+| `POST` | `/lights/all` | Set all zones uniformly |
+| `POST` | `/lights/off` | All zones off |
 
 ### Examples
 
@@ -197,6 +224,31 @@ curl -X POST --data-binary @firmware/vanfan.bin \
 
 # Device info
 curl http://vanfan.local/api/v1/info
+
+# Get light states
+curl http://vanfan.local/api/v1/lights
+
+# Set zone 1 to 100% brightness
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"zone":1,"on":true,"brightness":100}' http://vanfan.local/api/v1/lights/zone
+
+# Set multiple zones
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"zones":[{"zone":1,"brightness":80},{"zone":3,"on":true,"brightness":30}]}' \
+     http://vanfan.local/api/v1/lights/zones
+
+# All zones to 50%
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"on":true,"brightness":50}' http://vanfan.local/api/v1/lights/all
+
+# All zones off
+curl -X POST http://vanfan.local/api/v1/lights/off
+
+# WiFi status
+curl http://vanfan.local/api/v1/wifi
+
+# Clear NVS WiFi credentials
+curl -X POST http://vanfan.local/api/v1/wifi/reset
 ```
 
 ### State Response Format
@@ -212,13 +264,21 @@ curl http://vanfan.local/api/v1/info
 
 ### SSE Event Format
 
+Fan events (unnamed):
 ```
 data: {"running":true,"speed":50,"direction":"exhaust","mode":"manual","source":"button"}
 ```
 
+Light events (named `lights`):
+```
+event: lights
+data: {"zones":[{"on":true,"brightness":50},{"on":false,"brightness":50},{"on":false,"brightness":50}],"source":"button"}
+```
+
 SSE behavior:
-- Sends current state immediately on connection
-- Streams updates on every state change
+- Sends current fan and light state immediately on connection
+- Streams updates on every fan or light state change
+- Fan events: use `onmessage`; light events: use `addEventListener("lights", ...)`
 - `source` field: `"button"`, `"api"`, or `"startup"`
 - 15-second keepalive comments (`: keepalive`)
 - Maximum 4 concurrent SSE clients
@@ -312,6 +372,30 @@ Credentials are stored in NVS. The device restarts WiFi with the new credentials
 | WiFi disconnected | Red slow blink (~1Hz) |
 | BLE provisioning | Blue solid |
 | Credentials received | Green flash (2s) |
+| WiFi credential reset | Rapid yellow blink (3s) |
+
+## WiFi Resilience
+
+The controller supports multiple WiFi credential sources with automatic fallback:
+
+### Credential Priority
+
+1. **NVS credentials** (from BLE provisioning) — highest priority
+2. **Build-time credentials** (from `.env` file) — fallback
+
+On boot and reconnect, the device scans for visible networks and connects to the best known match. Both credential sets remain available — if the NVS network disappears, it automatically falls back to the build-time network.
+
+### Clearing Stale NVS Credentials
+
+NVS credentials persist across reflashes. If BLE-provisioned credentials become stale:
+
+**Boot-time reset:** Hold the **light button** during power-on. The status LED blinks yellow for 3 seconds, confirming the reset. The device then connects using build-time credentials.
+
+**API reset:** Send `POST /api/v1/wifi/reset` to clear NVS credentials and reconnect with build-time credentials.
+
+### Fan Independence
+
+The fan continues running at its current speed regardless of WiFi state. Buttons always work. WiFi reconnects automatically in the background with exponential backoff (1s to 60s).
 
 ## Project Structure
 
@@ -329,6 +413,8 @@ FanController/
 │   ├── wifi/                  # WiFi manager + mDNS + reconnect
 │   ├── api/                   # REST API endpoints
 │   ├── ota/                   # OTA update handler
+│   ├── led_control/           # 3-zone LED PWM dimming
+│   ├── light_button/          # Light button polling
 │   ├── ble_prov/              # BLE WiFi provisioning
 │   ├── status_led/            # WS2812B RGB LED
 │   └── settings/              # NVS persistence (stub)
@@ -365,6 +451,10 @@ All runtime configuration is set via Kconfig (`main/Kconfig.projbuild`) under th
 | Speed Button | `VANFAN_PIN_BTN_SPEED` | 9 |
 | Direction Button | `VANFAN_PIN_BTN_DIRECTION` | 10 |
 | Status LED | `VANFAN_PIN_STATUS_LED` | 46 |
+| LED Zone 1 | `VANFAN_PIN_LED_ZONE1` | 11 |
+| LED Zone 2 | `VANFAN_PIN_LED_ZONE2` | 12 |
+| LED Zone 3 | `VANFAN_PIN_LED_ZONE3` | 13 |
+| Light Button | `VANFAN_PIN_BTN_LIGHT` | 14 |
 
 Key `sdkconfig.defaults` settings:
 

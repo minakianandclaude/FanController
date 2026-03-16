@@ -18,6 +18,20 @@
 | Speed     | 9    | Input     | Internal pull-up, active low |
 | Direction | 10   | Input     | Internal pull-up, active low |
 
+## LED Lighting (MOSFET PWM)
+
+| Signal    | GPIO | Direction | Description |
+|-----------|------|-----------|-------------|
+| Zone 1    | 11   | Output    | LEDC CH2, Timer 1, 1kHz, 8-bit |
+| Zone 2    | 12   | Output    | LEDC CH3, Timer 1, 1kHz, 8-bit |
+| Zone 3    | 13   | Output    | LEDC CH4, Timer 1, 1kHz, 8-bit |
+
+## Light Button
+
+| Signal       | GPIO | Direction | Description |
+|--------------|------|-----------|-------------|
+| Light button | 14   | Input     | Internal pull-up, active low |
+
 ## Reserved / In Use by System
 
 | GPIO | Function |

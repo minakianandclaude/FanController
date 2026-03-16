@@ -172,21 +172,28 @@ Cache-Control: no-cache
 Connection: keep-alive
 ```
 
-**Event format:**
+**Fan event format** (unnamed — no `event:` prefix):
 ```
 data: {"running":true,"speed":40,"direction":"exhaust","mode":"manual","source":"button"}
 
 ```
 
-Each event is a JSON object on a single `data:` line, followed by two newlines.
+**Lights event format** (named `lights`):
+```
+event: lights
+data: {"zones":[{"on":true,"brightness":50},{"on":false,"brightness":50},{"on":false,"brightness":50}],"source":"button"}
+
+```
+
+Each event is a JSON object on a single `data:` line, followed by two newlines. Fan events use `onmessage` (unnamed), lights events use `addEventListener("lights", ...)`.
 
 | Field    | Type   | Description                                      |
 |----------|--------|--------------------------------------------------|
 | `source` | string | What triggered the change: `"button"`, `"api"`, or `"startup"` |
 
 **Behavior:**
-- Sends the current state immediately on connection
-- Streams updates whenever the fan state changes (from buttons or API)
+- Sends the current fan and light state immediately on connection
+- Streams updates whenever fan or light state changes (from buttons or API)
 - Sends `: keepalive` comments every 15 seconds to prevent timeout
 - Maximum 4 concurrent SSE clients
 - Dead clients are automatically removed on failed sends
@@ -206,6 +213,153 @@ with requests.get('http://vanfan.local/api/v1/events', stream=True) as r:
             state = json.loads(line[6:])
             print(f"Fan: {state}")
 ```
+
+---
+
+### GET /api/v1/lights
+
+Returns the current state of all LED lighting zones.
+
+**Response:**
+```json
+{
+  "zones": [
+    {"on": true, "brightness": 50},
+    {"on": false, "brightness": 50},
+    {"on": false, "brightness": 50}
+  ]
+}
+```
+
+| Field        | Type    | Description                          |
+|--------------|---------|--------------------------------------|
+| `zones`      | array   | Array of 3 zone state objects        |
+| `zones[].on` | boolean | Whether the zone is currently on     |
+| `zones[].brightness` | integer | Brightness level (0-100)    |
+
+---
+
+### POST /api/v1/lights/zone
+
+Set a single LED zone's state.
+
+**Request:**
+```json
+{
+  "zone": 1,
+  "on": true,
+  "brightness": 75
+}
+```
+
+| Field        | Type    | Required | Constraints |
+|--------------|---------|----------|-------------|
+| `zone`       | integer | yes      | 1-3         |
+| `on`         | boolean | no       | Defaults to true when brightness > 0 |
+| `brightness` | integer | no       | 0-100, keeps current if omitted |
+
+**Response:** Full lights state (same format as `GET /api/v1/lights`).
+
+**Errors:**
+- `400` — Missing or non-numeric `zone` field
+- `422` — Zone out of range or brightness out of range
+
+---
+
+### POST /api/v1/lights/zones
+
+Set multiple LED zones in a single request. Zones not listed are unchanged.
+
+**Request:**
+```json
+{
+  "zones": [
+    {"zone": 1, "on": true, "brightness": 100},
+    {"zone": 3, "brightness": 50}
+  ]
+}
+```
+
+Each entry follows the same schema as `/api/v1/lights/zone`. Validates all entries before applying; rejects the entire request on any error.
+
+**Response:** Full lights state.
+
+**Errors:**
+- `400` — Missing or invalid `zones` array
+- `422` — Invalid zone or brightness in any entry
+
+---
+
+### POST /api/v1/lights/all
+
+Set all LED zones to the same state.
+
+**Request:**
+```json
+{
+  "on": true,
+  "brightness": 50
+}
+```
+
+| Field        | Type    | Required | Constraints |
+|--------------|---------|----------|-------------|
+| `on`         | boolean | no       | Defaults to true |
+| `brightness` | integer | no       | 0-100, defaults to 50 |
+
+**Response:** Full lights state.
+
+**Errors:**
+- `422` — Brightness out of range
+
+---
+
+### POST /api/v1/lights/off
+
+Turn all LED zones off. Brightness values are remembered for toggle restore.
+
+**Request:** Empty body or `{}`.
+
+**Response:** Full lights state with all zones off.
+
+---
+
+### GET /api/v1/wifi
+
+Returns WiFi connection status and credential source.
+
+**Response:**
+```json
+{
+  "connected": true,
+  "credential_source": "nvs",
+  "ssid": "MyNetwork"
+}
+```
+
+| Field               | Type    | Description                              |
+|---------------------|---------|------------------------------------------|
+| `connected`         | boolean | Whether WiFi is currently connected      |
+| `credential_source` | string  | `"nvs"` or `"build-time"`               |
+| `ssid`              | string  | SSID currently configured                |
+
+---
+
+### POST /api/v1/wifi/reset
+
+Clears NVS-provisioned WiFi credentials and reconnects using build-time (.env) credentials. Use this when BLE-provisioned credentials are wrong or stale.
+
+**Request:** Empty body or `{}`.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "message": "NVS credentials cleared, reconnecting with build-time credentials"
+}
+```
+
+After responding, the device disconnects and reconnects using the build-time credentials. The WiFi connection may briefly drop.
 
 ---
 

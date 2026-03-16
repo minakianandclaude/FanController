@@ -29,6 +29,8 @@ static void led_task(void *arg)
     status_led_state_t current = STATUS_LED_OFF;
     int tick = 0;
     int success_ticks = 0;
+    int wifi_reset_ticks = 0;
+    int prov_fail_ticks = 0;
 
     while (1) {
         status_led_state_t desired = s_state;
@@ -38,6 +40,8 @@ static void led_task(void *arg)
             current = desired;
             tick = 0;
             success_ticks = 0;
+            wifi_reset_ticks = 0;
+            prov_fail_ticks = 0;
             clear_pixel();
         }
 
@@ -72,6 +76,36 @@ static void led_task(void *arg)
                 s_state = STATUS_LED_OFF;
             }
             vTaskDelay(pdMS_TO_TICKS(500));
+            break;
+
+        case STATUS_LED_WIFI_RESET:
+            // Rapid yellow blink for 3 seconds (250ms on/off), then auto-off
+            if (wifi_reset_ticks < 12) {  // 12 x 250ms = 3s
+                if (wifi_reset_ticks % 2 == 0) {
+                    set_pixel(32, 24, 0);  // dim yellow
+                } else {
+                    clear_pixel();
+                }
+                wifi_reset_ticks++;
+            } else {
+                s_state = STATUS_LED_OFF;
+            }
+            vTaskDelay(pdMS_TO_TICKS(250));
+            break;
+
+        case STATUS_LED_PROV_FAILED:
+            // Rapid red blink for 3 seconds, then back to blue (still in BLE mode)
+            if (prov_fail_ticks < 12) {  // 12 x 250ms = 3s
+                if (prov_fail_ticks % 2 == 0) {
+                    set_pixel(32, 0, 0);  // dim red
+                } else {
+                    clear_pixel();
+                }
+                prov_fail_ticks++;
+            } else {
+                s_state = STATUS_LED_BLE_PROVISIONING;
+            }
+            vTaskDelay(pdMS_TO_TICKS(250));
             break;
         }
     }

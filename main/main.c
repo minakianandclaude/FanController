@@ -19,6 +19,9 @@
 #include "ota.h"
 #include "status_led.h"
 #include "ble_prov.h"
+#include "led_control.h"
+#include "light_button.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "vanfan";
 
@@ -45,7 +48,7 @@ static void enter_provisioning(void)
 
     // Shut down networking stack (order matters)
     api_stop();
-    wifi_manager_stop();
+    wifi_manager_suspend();
 
     // Start BLE
     status_led_set_state(STATUS_LED_BLE_PROVISIONING);
@@ -77,6 +80,54 @@ static void exit_provisioning_cancel(void)
     wifi_manager_start();
     api_start();
     status_led_set_state(STATUS_LED_OFF);
+}
+
+static void light_button_dispatcher(light_button_event_t evt, void *user_data)
+{
+    switch (evt) {
+    case LIGHT_BTN_EVT_PRESS: {
+        int action = led_control_get_button_action();
+        if (action == LED_BTN_ACTION_ALL) {
+            led_control_toggle_all(LED_SRC_BUTTON);
+        } else {
+            led_control_toggle_zone(action, LED_SRC_BUTTON);
+        }
+        break;
+    }
+    case LIGHT_BTN_EVT_HOLD:
+        led_control_all_off(LED_SRC_BUTTON);
+        break;
+    }
+}
+
+static bool check_wifi_reset_button(void)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << CONFIG_VANFAN_PIN_BTN_LIGHT),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+
+    // Check if button is held low at boot
+    if (gpio_get_level(CONFIG_VANFAN_PIN_BTN_LIGHT) != 0) {
+        return false;
+    }
+
+    ESP_LOGW(TAG, "Light button held at boot — waiting 2s to confirm WiFi reset...");
+
+    // Poll for 2 seconds to confirm deliberate hold
+    for (int i = 0; i < 40; i++) {  // 40 x 50ms = 2s
+        vTaskDelay(pdMS_TO_TICKS(50));
+        if (gpio_get_level(CONFIG_VANFAN_PIN_BTN_LIGHT) != 0) {
+            ESP_LOGI(TAG, "Button released early — no WiFi reset");
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static void button_dispatcher(button_id_t btn, button_event_t evt, void *user_data)
@@ -139,6 +190,15 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Free heap: %lu bytes", (unsigned long)esp_get_free_heap_size());
 
+    // Boot-time WiFi credential reset (hold light button during power-on)
+    if (check_wifi_reset_button()) {
+        ESP_LOGW(TAG, "========================================");
+        ESP_LOGW(TAG, "  === WIFI CREDENTIAL RESET ===");
+        ESP_LOGW(TAG, "========================================");
+        status_led_set_state(STATUS_LED_WIFI_RESET);
+        wifi_manager_request_credential_reset();
+    }
+
     // 1. Motor driver hardware
     bts7960_config_t motor_cfg = {
         .rpwm_gpio = CONFIG_VANFAN_PIN_RPWM,
@@ -163,33 +223,55 @@ void app_main(void)
     // 4. Button dispatcher — routes events to fan_control or provisioning
     buttons_register_callback(button_dispatcher, NULL);
 
-    // 5. Event emitter (registers state change callback for SSE)
+    // 5. LED lighting (3-zone PWM)
+    led_control_config_t led_cfg = {
+        .zone_gpios = {
+            CONFIG_VANFAN_PIN_LED_ZONE1,
+            CONFIG_VANFAN_PIN_LED_ZONE2,
+            CONFIG_VANFAN_PIN_LED_ZONE3,
+        },
+    };
+    ESP_ERROR_CHECK(led_control_init(&led_cfg));
+
+    // 6. Light button (polling task)
+    light_button_config_t light_btn_cfg = {
+        .gpio = CONFIG_VANFAN_PIN_BTN_LIGHT,
+    };
+    ESP_ERROR_CHECK(light_button_init(&light_btn_cfg));
+    light_button_register_callback(light_button_dispatcher, NULL);
+
+    // 7. Event emitter (registers state change callback for SSE)
     ESP_ERROR_CHECK(event_emitter_init());
 
-    // 6. WiFi (creates event loop + netif — must be before ble_prov_init)
+    // 8. WiFi (creates event loop + netif — must be before ble_prov_init)
     ESP_ERROR_CHECK(wifi_manager_init());
     wifi_manager_register_state_cb(on_wifi_state);
 
-    // 7. BLE provisioning (init only — registers event handler, started on hold-both)
+    // 9. BLE provisioning (init only — registers event handler, started on hold-both)
     ESP_ERROR_CHECK(ble_prov_init(on_prov_creds_received));
 
-    // 8. HTTP API server
+    // 10. HTTP API server
     ESP_ERROR_CHECK(api_init());
 
-    // 9. OTA boot validation (mark firmware valid if pending verify)
+    // 11. OTA boot validation (mark firmware valid if pending verify)
     ESP_ERROR_CHECK(ota_init());
 
     ESP_LOGI(TAG, "Startup complete. Fan off, awaiting input.");
 
     // Heartbeat
     while (1) {
-        fan_state_t state;
-        fan_control_get_state(&state);
-        ESP_LOGI(TAG, "heartbeat | heap=%lu running=%d speed=%d dir=%s output=%d wifi=%s prov=%s",
+        fan_state_t fan;
+        fan_control_get_state(&fan);
+        led_state_t lights;
+        led_control_get_state(&lights);
+        ESP_LOGI(TAG, "heartbeat | heap=%lu fan=%d/%d/%s output=%d lights=%d,%d,%d wifi=%s prov=%s",
                  (unsigned long)esp_get_free_heap_size(),
-                 state.running, state.speed_percent,
-                 state.direction == FAN_DIR_EXHAUST ? "exhaust" : "intake",
+                 fan.running, fan.speed_percent,
+                 fan.direction == FAN_DIR_EXHAUST ? "exhaust" : "intake",
                  bts7960_get_current_output(),
+                 lights.zones[0].on ? lights.zones[0].brightness : 0,
+                 lights.zones[1].on ? lights.zones[1].brightness : 0,
+                 lights.zones[2].on ? lights.zones[2].brightness : 0,
                  wifi_manager_is_connected() ? "yes" : "no",
                  s_provisioning_active ? "BLE" : "off");
         vTaskDelay(pdMS_TO_TICKS(5000));

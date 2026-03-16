@@ -1,13 +1,16 @@
 #include "api.h"
 #include "fan_control.h"
+#include "led_control.h"
 #include "event_emitter.h"
 #include "ota.h"
+#include "wifi_manager.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
 #include "esp_app_desc.h"
 #include "esp_ota_ops.h"
+#include "esp_wifi.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdio.h>
@@ -321,6 +324,210 @@ static esp_err_t handle_ota_update(httpd_req_t *req)
     return ota_handle_upload(req);
 }
 
+// ---------- lights helpers ----------
+
+static char *lights_state_to_json(void)
+{
+    led_state_t state;
+    led_control_get_state(&state);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *zones = cJSON_CreateArray();
+    for (int i = 0; i < LED_ZONE_COUNT; i++) {
+        cJSON *z = cJSON_CreateObject();
+        cJSON_AddBoolToObject(z, "on", state.zones[i].on);
+        cJSON_AddNumberToObject(z, "brightness", state.zones[i].brightness);
+        cJSON_AddItemToArray(zones, z);
+    }
+    cJSON_AddItemToObject(root, "zones", zones);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json;
+}
+
+static esp_err_t send_lights_response(httpd_req_t *req)
+{
+    char *json = lights_state_to_json();
+    if (!json) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+
+// ---------- GET /api/v1/lights ----------
+
+static esp_err_t handle_lights_status(httpd_req_t *req)
+{
+    return send_lights_response(req);
+}
+
+// ---------- POST /api/v1/lights/zone ----------
+
+static esp_err_t handle_lights_zone(httpd_req_t *req)
+{
+    cJSON *root = read_post_json(req);
+    if (!root) return ESP_OK;
+
+    cJSON *zone_item = cJSON_GetObjectItem(root, "zone");
+    if (!cJSON_IsNumber(zone_item)) {
+        cJSON_Delete(root);
+        return send_error(req, 400, "Missing or invalid 'zone' field");
+    }
+    int zone = zone_item->valueint;
+    if (zone < 1 || zone > LED_ZONE_COUNT) {
+        cJSON_Delete(root);
+        return send_error(req, 422, "Zone must be 1-3");
+    }
+
+    // Get current state for defaults
+    led_state_t current;
+    led_control_get_state(&current);
+    int idx = zone - 1;
+
+    cJSON *brightness_item = cJSON_GetObjectItem(root, "brightness");
+    uint8_t brightness = current.zones[idx].brightness;
+    if (cJSON_IsNumber(brightness_item)) {
+        int b = brightness_item->valueint;
+        if (b < 0 || b > 100) {
+            cJSON_Delete(root);
+            return send_error(req, 422, "Brightness must be 0-100");
+        }
+        brightness = (uint8_t)b;
+    }
+
+    cJSON *on_item = cJSON_GetObjectItem(root, "on");
+    bool on;
+    if (cJSON_IsBool(on_item)) {
+        on = cJSON_IsTrue(on_item);
+    } else {
+        // Default: on if brightness > 0
+        on = (brightness > 0);
+    }
+
+    cJSON_Delete(root);
+
+    // If no brightness specified and turning on with 0, use default
+    if (on && brightness == 0) {
+        brightness = 50;
+    }
+
+    led_control_set_zone(idx, on, brightness, LED_SRC_API);
+    return send_lights_response(req);
+}
+
+// ---------- POST /api/v1/lights/zones ----------
+
+static esp_err_t handle_lights_zones(httpd_req_t *req)
+{
+    cJSON *root = read_post_json(req);
+    if (!root) return ESP_OK;
+
+    cJSON *zones_arr = cJSON_GetObjectItem(root, "zones");
+    if (!cJSON_IsArray(zones_arr)) {
+        cJSON_Delete(root);
+        return send_error(req, 400, "Missing or invalid 'zones' array");
+    }
+
+    int count = cJSON_GetArraySize(zones_arr);
+    if (count < 1) {
+        cJSON_Delete(root);
+        return send_error(req, 400, "'zones' array must not be empty");
+    }
+
+    // Validate all entries first
+    for (int i = 0; i < count; i++) {
+        cJSON *entry = cJSON_GetArrayItem(zones_arr, i);
+        cJSON *zone_item = cJSON_GetObjectItem(entry, "zone");
+        if (!cJSON_IsNumber(zone_item) || zone_item->valueint < 1 || zone_item->valueint > LED_ZONE_COUNT) {
+            cJSON_Delete(root);
+            return send_error(req, 422, "Each entry must have 'zone' 1-3");
+        }
+        cJSON *brightness_item = cJSON_GetObjectItem(entry, "brightness");
+        if (cJSON_IsNumber(brightness_item)) {
+            int b = brightness_item->valueint;
+            if (b < 0 || b > 100) {
+                cJSON_Delete(root);
+                return send_error(req, 422, "Brightness must be 0-100");
+            }
+        }
+    }
+
+    // Apply all entries
+    led_state_t current;
+    led_control_get_state(&current);
+
+    for (int i = 0; i < count; i++) {
+        cJSON *entry = cJSON_GetArrayItem(zones_arr, i);
+        int idx = cJSON_GetObjectItem(entry, "zone")->valueint - 1;
+
+        cJSON *brightness_item = cJSON_GetObjectItem(entry, "brightness");
+        uint8_t brightness = current.zones[idx].brightness;
+        if (cJSON_IsNumber(brightness_item)) {
+            brightness = (uint8_t)brightness_item->valueint;
+        }
+
+        cJSON *on_item = cJSON_GetObjectItem(entry, "on");
+        bool on;
+        if (cJSON_IsBool(on_item)) {
+            on = cJSON_IsTrue(on_item);
+        } else {
+            on = (brightness > 0);
+        }
+
+        if (on && brightness == 0) {
+            brightness = 50;
+        }
+
+        led_control_set_zone(idx, on, brightness, LED_SRC_API);
+    }
+
+    cJSON_Delete(root);
+    return send_lights_response(req);
+}
+
+// ---------- POST /api/v1/lights/all ----------
+
+static esp_err_t handle_lights_all(httpd_req_t *req)
+{
+    cJSON *root = read_post_json(req);
+    if (!root) return ESP_OK;
+
+    cJSON *brightness_item = cJSON_GetObjectItem(root, "brightness");
+    uint8_t brightness = 50;
+    if (cJSON_IsNumber(brightness_item)) {
+        int b = brightness_item->valueint;
+        if (b < 0 || b > 100) {
+            cJSON_Delete(root);
+            return send_error(req, 422, "Brightness must be 0-100");
+        }
+        brightness = (uint8_t)b;
+    }
+
+    cJSON *on_item = cJSON_GetObjectItem(root, "on");
+    bool on = true;
+    if (cJSON_IsBool(on_item)) {
+        on = cJSON_IsTrue(on_item);
+    }
+
+    cJSON_Delete(root);
+
+    led_control_set_all(on, brightness, LED_SRC_API);
+    return send_lights_response(req);
+}
+
+// ---------- POST /api/v1/lights/off ----------
+
+static esp_err_t handle_lights_off(httpd_req_t *req)
+{
+    led_control_all_off(LED_SRC_API);
+    return send_lights_response(req);
+}
+
 // ---------- GET /api/v1/info ----------
 
 static esp_err_t handle_info(httpd_req_t *req)
@@ -361,6 +568,107 @@ static esp_err_t handle_info(httpd_req_t *req)
     return ESP_OK;
 }
 
+// ---------- GET /api/v1/lights/button ----------
+
+static esp_err_t handle_lights_button_get(httpd_req_t *req)
+{
+    int action = led_control_get_button_action();
+    cJSON *root = cJSON_CreateObject();
+    if (action == LED_BTN_ACTION_ALL) {
+        cJSON_AddStringToObject(root, "action", "all");
+    } else {
+        cJSON_AddStringToObject(root, "action", "zone");
+        cJSON_AddNumberToObject(root, "zone", action + 1);
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json ? json : "{}");
+    free(json);
+    return ESP_OK;
+}
+
+// ---------- POST /api/v1/lights/button ----------
+
+static esp_err_t handle_lights_button_set(httpd_req_t *req)
+{
+    cJSON *root = read_post_json(req);
+    if (!root) return ESP_OK;
+
+    cJSON *action_item = cJSON_GetObjectItem(root, "action");
+    if (!cJSON_IsString(action_item)) {
+        cJSON_Delete(root);
+        return send_error(req, 400, "Missing or invalid 'action' field");
+    }
+
+    if (strcmp(action_item->valuestring, "all") == 0) {
+        led_control_set_button_action(LED_BTN_ACTION_ALL);
+    } else if (strcmp(action_item->valuestring, "zone") == 0) {
+        cJSON *zone_item = cJSON_GetObjectItem(root, "zone");
+        if (!cJSON_IsNumber(zone_item) || zone_item->valueint < 1 || zone_item->valueint > LED_ZONE_COUNT) {
+            cJSON_Delete(root);
+            return send_error(req, 422, "Zone must be 1-3");
+        }
+        led_control_set_button_action(zone_item->valueint - 1);
+    } else {
+        cJSON_Delete(root);
+        return send_error(req, 422, "Action must be 'all' or 'zone'");
+    }
+
+    cJSON_Delete(root);
+    return handle_lights_button_get(req);
+}
+
+// ---------- GET /api/v1/wifi ----------
+
+static esp_err_t handle_wifi_status(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "connected", wifi_manager_is_connected());
+
+    wifi_cred_source_t src = wifi_manager_get_cred_source();
+    cJSON_AddStringToObject(root, "credential_source",
+                            src == WIFI_CRED_SOURCE_NVS ? "nvs" : "build-time");
+
+    wifi_config_t cfg = {0};
+    if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK) {
+        cJSON_AddStringToObject(root, "ssid", (char *)cfg.sta.ssid);
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json ? json : "{}");
+    free(json);
+    return ESP_OK;
+}
+
+// ---------- POST /api/v1/wifi/reset ----------
+
+static esp_err_t handle_wifi_reset(httpd_req_t *req)
+{
+    ESP_LOGW(TAG, "WiFi credential reset requested via API");
+
+    esp_err_t ret = wifi_manager_clear_credentials();
+    if (ret != ESP_OK) {
+        return send_error(req, 500, "Failed to clear credentials");
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "ok");
+    cJSON_AddStringToObject(root, "message", "NVS credentials cleared, reconnecting with build-time credentials");
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json ? json : "{}");
+    free(json);
+
+    // clear_credentials already disconnects and triggers reconnect with build-time creds
+    return ESP_OK;
+}
+
 // ---------- server init ----------
 
 static const httpd_uri_t s_uri_handlers[] = {
@@ -374,6 +682,15 @@ static const httpd_uri_t s_uri_handlers[] = {
     { .uri = "/api/v1/events",     .method = HTTP_GET,  .handler = handle_events },
     { .uri = "/api/v1/ota/update", .method = HTTP_POST, .handler = handle_ota_update },
     { .uri = "/api/v1/info",       .method = HTTP_GET,  .handler = handle_info },
+    { .uri = "/api/v1/lights",      .method = HTTP_GET,  .handler = handle_lights_status },
+    { .uri = "/api/v1/lights/zone", .method = HTTP_POST, .handler = handle_lights_zone },
+    { .uri = "/api/v1/lights/zones",.method = HTTP_POST, .handler = handle_lights_zones },
+    { .uri = "/api/v1/lights/all",  .method = HTTP_POST, .handler = handle_lights_all },
+    { .uri = "/api/v1/lights/off",    .method = HTTP_POST, .handler = handle_lights_off },
+    { .uri = "/api/v1/lights/button", .method = HTTP_GET,  .handler = handle_lights_button_get },
+    { .uri = "/api/v1/lights/button", .method = HTTP_POST, .handler = handle_lights_button_set },
+    { .uri = "/api/v1/wifi",          .method = HTTP_GET,  .handler = handle_wifi_status },
+    { .uri = "/api/v1/wifi/reset",  .method = HTTP_POST, .handler = handle_wifi_reset },
 };
 
 esp_err_t api_init(void)
@@ -383,7 +700,7 @@ esp_err_t api_init(void)
     s_boot_time_us = (int64_t)now.tv_sec * 1000000 + now.tv_usec;
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
     config.stack_size = 8192;
 
@@ -418,7 +735,7 @@ esp_err_t api_stop(void)
 esp_err_t api_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
     config.stack_size = 8192;
 

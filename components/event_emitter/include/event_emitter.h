@@ -3,6 +3,7 @@
 #include "esp_err.h"
 #include "esp_http_server.h"
 #include "fan_control.h"
+#include "led_control.h"
 
 esp_err_t event_emitter_init(void);
 esp_err_t event_emitter_add_client(int fd, httpd_handle_t hd);

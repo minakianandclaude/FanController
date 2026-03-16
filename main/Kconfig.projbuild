@@ -64,4 +64,24 @@ menu "VanFan Controller"
             default 46
     endmenu
 
+    menu "LED Light Pin Assignments"
+        config VANFAN_PIN_LED_ZONE1
+            int "LED Zone 1 PWM GPIO"
+            default 11
+
+        config VANFAN_PIN_LED_ZONE2
+            int "LED Zone 2 PWM GPIO"
+            default 12
+
+        config VANFAN_PIN_LED_ZONE3
+            int "LED Zone 3 PWM GPIO"
+            default 13
+    endmenu
+
+    menu "Light Button"
+        config VANFAN_PIN_BTN_LIGHT
+            int "Light button GPIO"
+            default 14
+    endmenu
+
 endmenu

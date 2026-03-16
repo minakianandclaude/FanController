@@ -1,4 +1,5 @@
 #include "ble_prov.h"
+#include "status_led.h"
 #include "wifi_provisioning/manager.h"
 #include "wifi_provisioning/scheme_ble.h"
 #include "esp_log.h"
@@ -35,6 +36,7 @@ static void prov_event_handler(void *arg, esp_event_base_t base,
             wifi_prov_sta_fail_reason_t *reason = (wifi_prov_sta_fail_reason_t *)data;
             ESP_LOGE(TAG, "Provisioning failed: %s — will restart for retry",
                      (*reason == WIFI_PROV_STA_AUTH_ERROR) ? "auth error" : "AP not found");
+            status_led_set_state(STATUS_LED_PROV_FAILED);
             // Prov manager won't accept new creds after failure. Flag a restart
             // so WIFI_PROV_END handler re-launches provisioning.
             s_restart_pending = true;
