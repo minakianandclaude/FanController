@@ -166,7 +166,7 @@ Dedicated button for LED lighting control:
 
 | Action | Result |
 |--------|--------|
-| Press | Toggle zone 1 on/off (at 50% brightness) |
+| Press | Toggle zone (default: zone 1, configurable via API) |
 | Hold | All zones off |
 
 ## REST API
@@ -194,6 +194,8 @@ Dedicated button for LED lighting control:
 | `POST` | `/lights/zones` | Set multiple zones |
 | `POST` | `/lights/all` | Set all zones uniformly |
 | `POST` | `/lights/off` | All zones off |
+| `GET` | `/lights/button` | Light button press action |
+| `POST` | `/lights/button` | Configure light button press action |
 
 ### Examples
 
@@ -249,6 +251,17 @@ curl http://vanfan.local/api/v1/wifi
 
 # Clear NVS WiFi credentials
 curl -X POST http://vanfan.local/api/v1/wifi/reset
+
+# Get light button config
+curl http://vanfan.local/api/v1/lights/button
+
+# Set light button to toggle all zones
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"action":"all"}' http://vanfan.local/api/v1/lights/button
+
+# Set light button to toggle zone 2
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"action":"zone","zone":2}' http://vanfan.local/api/v1/lights/button
 ```
 
 ### State Response Format
@@ -333,7 +346,7 @@ ota_0      0x20000  1.5MB    Application slot A
 ota_1      0x1A0000 1.5MB    Application slot B
 ```
 
-Current binary size: **877KB** (well under 1.5MB limit).
+Current binary size: **1159KB** (well under 1.5MB limit).
 
 ## BLE WiFi Provisioning
 
@@ -344,7 +357,7 @@ For updating WiFi credentials in the field without reflashing.
 Hold both Speed and Direction buttons for 800ms. The status LED turns solid blue.
 
 During provisioning:
-- WiFi and HTTP server are stopped
+- WiFi is suspended (driver stays running for credential verification) and HTTP server is stopped
 - BLE advertises as `VANFAN`
 - Fan continues running; single-button presses still work
 - A 5-second grace period prevents accidental exit
@@ -372,6 +385,7 @@ Credentials are stored in NVS. The device restarts WiFi with the new credentials
 | WiFi disconnected | Red slow blink (~1Hz) |
 | BLE provisioning | Blue solid |
 | Credentials received | Green flash (2s) |
+| Credentials failed | Rapid red blink (3s), then back to blue |
 | WiFi credential reset | Rapid yellow blink (3s) |
 
 ## WiFi Resilience
@@ -429,7 +443,7 @@ FanController/
 ├── Dockerfile                 # Build environment
 ├── partitions.csv             # OTA partition table
 ├── sdkconfig.defaults         # ESP-IDF configuration
-├── version.txt                # Firmware version (0.2.0)
+├── version.txt                # Firmware version (0.4.0)
 └── pinout.md                  # Hardware pinout reference
 ```
 
@@ -518,14 +532,16 @@ Button press cycles through: **20 → 40 → 60 → 80 → 100 → 20** (wrap). 
 
 | Component | Lines |
 |-----------|-------|
-| api | 441 |
-| fan_control | 295 |
-| bts7960 | 283 |
-| wifi | 220 |
-| main | 198 |
-| event_emitter | 193 |
-| buttons | 181 |
-| ota | 167 |
-| ble_prov | 151 |
-| status_led | 117 |
-| **Total** | **~2,250** |
+| api | 765 |
+| wifi | 548 |
+| fan_control | 354 |
+| bts7960 | 302 |
+| main | 279 |
+| led_control | 274 |
+| event_emitter | 257 |
+| buttons | 206 |
+| ota | 174 |
+| status_led | 166 |
+| ble_prov | 164 |
+| light_button | 132 |
+| **Total** | **~3,620** |

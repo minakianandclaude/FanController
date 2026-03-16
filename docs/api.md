@@ -324,6 +324,61 @@ Turn all LED zones off. Brightness values are remembered for toggle restore.
 
 ---
 
+### GET /api/v1/lights/button
+
+Returns the current light button press action configuration.
+
+**Response:**
+```json
+{
+  "action": "zone",
+  "zone": 1
+}
+```
+
+| Field    | Type    | Description                              |
+|----------|---------|------------------------------------------|
+| `action` | string  | `"zone"` (toggle one zone) or `"all"` (toggle all) |
+| `zone`   | integer | Zone number (1-3), only present when action is `"zone"` |
+
+---
+
+### POST /api/v1/lights/button
+
+Configure what the light button press does.
+
+**Request (toggle specific zone):**
+```json
+{
+  "action": "zone",
+  "zone": 2
+}
+```
+
+**Request (toggle all zones):**
+```json
+{
+  "action": "all"
+}
+```
+
+| Field    | Type    | Required | Constraints                    |
+|----------|---------|----------|--------------------------------|
+| `action` | string  | yes      | `"zone"` or `"all"`            |
+| `zone`   | integer | if zone  | 1-3, required when action is `"zone"` |
+
+**Response:** Updated button configuration (same format as GET).
+
+**Errors:**
+- `400` — Missing or non-string `action` field
+- `422` — Invalid action or zone out of range
+
+**Notes:**
+- Setting resets to zone 1 on reboot (not persisted to NVS)
+- Hold action (all off) is not configurable
+
+---
+
 ### GET /api/v1/wifi
 
 Returns WiFi connection status and credential source.
@@ -392,7 +447,7 @@ The device restarts immediately after sending the response.
 
 **Limits:**
 - Maximum binary size: 1.5MB (OTA partition size)
-- Current binary size: ~877KB
+- Current binary size: ~1159KB
 - No authentication required
 
 **Notes:**
@@ -410,7 +465,7 @@ Returns device information.
 **Response:**
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.4.0",
   "uptime_s": 3600,
   "free_heap": 350000,
   "chip": {
